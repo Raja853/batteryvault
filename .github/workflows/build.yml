@@ -65,8 +65,8 @@ jobs:
                   applicationId "com.example.batterybackup"
                   minSdk 26
                   targetSdk 34
-                  versionCode 2
-                  versionName "2.0"
+                  versionCode 3
+                  versionName "3.0"
               }
 
               buildFeatures {
@@ -90,6 +90,7 @@ jobs:
               implementation 'androidx.activity:activity-compose:1.9.0'
               implementation 'androidx.compose.ui:ui'
               implementation 'androidx.compose.foundation:foundation'
+              implementation 'androidx.compose.animation:animation'
               implementation 'androidx.compose.material3:material3'
           }
           EOF
@@ -150,9 +151,30 @@ jobs:
           import android.os.Bundle
           import androidx.activity.ComponentActivity
           import androidx.activity.compose.setContent
+          import androidx.compose.animation.AnimatedVisibility
+          import androidx.compose.animation.animateColorAsState
+          import androidx.compose.animation.core.FastOutSlowInEasing
+          import androidx.compose.animation.core.LinearEasing
+          import androidx.compose.animation.core.RepeatMode
+          import androidx.compose.animation.core.Spring
+          import androidx.compose.animation.core.animateFloat
+          import androidx.compose.animation.core.animateFloatAsState
+          import androidx.compose.animation.core.animateIntAsState
+          import androidx.compose.animation.core.infiniteRepeatable
+          import androidx.compose.animation.core.rememberInfiniteTransition
+          import androidx.compose.animation.core.spring
+          import androidx.compose.animation.core.tween
+          import androidx.compose.animation.expandVertically
+          import androidx.compose.animation.fadeIn
+          import androidx.compose.animation.fadeOut
+          import androidx.compose.animation.shrinkVertically
+          import androidx.compose.animation.slideInVertically
+          import androidx.compose.foundation.Canvas
           import androidx.compose.foundation.background
           import androidx.compose.foundation.border
           import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.interaction.MutableInteractionSource
+          import androidx.compose.foundation.interaction.collectIsPressedAsState
           import androidx.compose.foundation.layout.Arrangement
           import androidx.compose.foundation.layout.Box
           import androidx.compose.foundation.layout.Column
@@ -172,15 +194,22 @@ jobs:
           import androidx.compose.material3.Surface
           import androidx.compose.material3.Text
           import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.LaunchedEffect
           import androidx.compose.runtime.getValue
           import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
           import androidx.compose.runtime.saveable.rememberSaveable
           import androidx.compose.runtime.setValue
           import androidx.compose.ui.Alignment
           import androidx.compose.ui.Modifier
           import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.geometry.CornerRadius
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.geometry.Size
           import androidx.compose.ui.graphics.Brush
           import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.graphicsLayer
           import androidx.compose.ui.text.TextStyle
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.text.input.KeyboardType
@@ -198,6 +227,9 @@ jobs:
           private val TextMain = Color(0xFFF1F5F9)
           private val TextDim = Color(0xFF94A3B8)
           private val ChipBg = Color(0xFF1B2740)
+          private val Red = Color(0xFFF87171)
+          private val Amber = Color(0xFFFBBF24)
+          private val Green = Color(0xFF4ADE80)
 
           private const val EFFICIENCY = 0.8 // lead-acid: 80% usable
 
@@ -210,6 +242,19 @@ jobs:
               }
           }
 
+          // ------------------------------------------------------------------
+          // Logic
+          // ------------------------------------------------------------------
+
+          private enum class Wiring(val label: String) {
+              AUTO("Auto"),
+              SERIES("Series"),
+              PARALLEL("Parallel")
+          }
+
+          /** s = batteries in series per string, p = number of strings in parallel */
+          private data class Layout(val s: Int, val p: Int, val error: String?)
+
           private data class BackupResult(
               val totalMinutes: Int,
               val storedWh: Double,
@@ -219,16 +264,36 @@ jobs:
               val currentA: Double
           )
 
+          private fun makeLayout(mode: Wiring, n: Int, cellV: Double, invV: Double): Layout {
+              return when (mode) {
+                  Wiring.SERIES -> Layout(n, 1, null)
+                  Wiring.PARALLEL -> Layout(1, n, null)
+                  Wiring.AUTO -> {
+                      val sf = invV / cellV
+                      if (sf < 1.0 || sf % 1.0 != 0.0) {
+                          Layout(1, 1, "Inverter voltage must be a multiple of the battery voltage (${num(cellV)} V)")
+                      } else {
+                          val s = sf.toInt()
+                          if (n % s != 0) {
+                              Layout(s, 1, "A ${num(invV)} V system needs batteries in groups of $s. Use ${s}, ${s * 2}, ${s * 3}… batteries")
+                          } else {
+                              Layout(s, n / s, null)
+                          }
+                      }
+                  }
+              }
+          }
+
           private fun calculate(
               load: Double?,
               ah: Double?,
               cellV: Double,
-              count: Int,
-              series: Boolean
+              s: Int,
+              p: Int
           ): BackupResult? {
-              if (load == null || ah == null || load <= 0.0 || ah <= 0.0 || count <= 0) return null
-              val systemV = if (series) cellV * count else cellV
-              val systemAh = if (series) ah else ah * count
+              if (load == null || ah == null || load <= 0.0 || ah <= 0.0) return null
+              val systemV = cellV * s
+              val systemAh = ah * p
               val stored = systemV * systemAh
               val usable = stored * EFFICIENCY
               val hours = usable / load
@@ -251,15 +316,51 @@ jobs:
               return SimpleDateFormat(pattern, Locale.getDefault()).format(end.time)
           }
 
+          // ------------------------------------------------------------------
+          // Screen
+          // ------------------------------------------------------------------
+
           @Composable
           fun VoltVaultApp() {
               var load by rememberSaveable { mutableStateOf("350") }
               var ah by rememberSaveable { mutableStateOf("150") }
               var cellV by rememberSaveable { mutableStateOf(12) }
               var count by rememberSaveable { mutableStateOf(1) }
-              var series by rememberSaveable { mutableStateOf(true) }
+              var wiringName by rememberSaveable { mutableStateOf(Wiring.AUTO.name) }
+              var invChoice by rememberSaveable { mutableStateOf("12") }
+              var invCustom by rememberSaveable { mutableStateOf("") }
 
-              val result = calculate(load.toDoubleOrNull(), ah.toDoubleOrNull(), cellV.toDouble(), count, series)
+              var shown by remember { mutableStateOf(false) }
+              LaunchedEffect(Unit) { shown = true }
+
+              val wiring = Wiring.valueOf(wiringName)
+              val custom = invChoice == "Custom"
+              val invV: Double? = if (custom) invCustom.toDoubleOrNull() else invChoice.toDouble()
+              val invError: String? = when {
+                  !custom -> null
+                  invCustom.isBlank() -> "Type your inverter voltage"
+                  invV == null || invV < 12.0 || invV % 12.0 != 0.0 ->
+                      "Must be a multiple of 12 V, like 24, 36, 48, 60…"
+                  else -> null
+              }
+
+              val lay: Layout? =
+                  if (invError != null || invV == null) null
+                  else makeLayout(wiring, count, cellV.toDouble(), invV)
+              val layOk = lay != null && lay.error == null
+
+              val result: BackupResult? =
+                  if (lay != null && layOk) {
+                      calculate(load.toDoubleOrNull(), ah.toDoubleOrNull(), cellV.toDouble(), lay.s, lay.p)
+                  } else null
+
+              val message = invError ?: lay?.error ?: "Enter your load and battery capacity"
+              val isError = invError != null || lay?.error != null
+
+              val systemV = if (lay != null && layOk) cellV * lay.s.toDouble() else null
+              val voltMatch: Boolean? =
+                  if (systemV != null && invV != null) Math.abs(systemV - invV) < 0.01 else null
+
               val cardShape = RoundedCornerShape(24.dp)
 
               Surface(color = Bg, modifier = Modifier.fillMaxSize()) {
@@ -270,84 +371,155 @@ jobs:
                       verticalArrangement = Arrangement.spacedBy(16.dp)
                   ) {
                       // ---------- Header ----------
-                      Column(
-                          modifier = Modifier.fillMaxWidth(),
-                          horizontalAlignment = Alignment.CenterHorizontally
-                      ) {
-                          Text(
-                              "⚡ VoltVault",
-                              color = Accent,
-                              fontSize = 30.sp,
-                              fontWeight = FontWeight.Bold
-                          )
-                          Spacer(Modifier.height(4.dp))
-                          Text(
-                              "Lead-acid inverter backup calculator",
-                              color = TextDim,
-                              fontSize = 14.sp
-                          )
-                      }
+                      Reveal(shown, 0) { Header() }
 
                       // ---------- Result card ----------
-                      ResultCard(result)
+                      Reveal(shown, 1) { ResultCard(result, message, isError) }
 
                       // ---------- Inputs ----------
-                      Column(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .clip(cardShape)
-                              .background(CardBg)
-                              .border(1.dp, Line, cardShape)
-                              .padding(20.dp),
-                          verticalArrangement = Arrangement.spacedBy(10.dp)
-                      ) {
-                          FieldHeader("Total load", load.toDoubleOrNull()?.let { num(it) + " W" })
-                          NumberField(load, "W") { load = it }
-                          ChipRow(listOf("150", "350", "600", "1000"), load, " W") { load = it }
+                      Reveal(shown, 2) {
+                          Column(
+                              modifier = Modifier
+                                  .fillMaxWidth()
+                                  .clip(cardShape)
+                                  .background(CardBg)
+                                  .border(1.dp, Line, cardShape)
+                                  .padding(20.dp),
+                              verticalArrangement = Arrangement.spacedBy(10.dp)
+                          ) {
+                              FieldHeader("Total load", load.toDoubleOrNull()?.let { num(it) + " W" })
+                              NumberField(load, "W", false) { load = it }
+                              ChipRow(listOf("150", "350", "600", "1000"), load, { "$it W" }) { load = it }
 
-                          Spacer(Modifier.height(8.dp))
-                          FieldHeader("Battery capacity", ah.toDoubleOrNull()?.let { num(it) + " Ah" })
-                          NumberField(ah, "Ah") { ah = it }
-                          ChipRow(listOf("100", "150", "200", "220"), ah, " Ah") { ah = it }
+                              Spacer(Modifier.height(8.dp))
+                              FieldHeader("Battery capacity", ah.toDoubleOrNull()?.let { num(it) + " Ah" })
+                              NumberField(ah, "Ah", false) { ah = it }
+                              ChipRow(listOf("100", "150", "200", "220"), ah, { "$it Ah" }) { ah = it }
 
-                          Spacer(Modifier.height(8.dp))
-                          FieldHeader("Voltage of each battery")
-                          ChipRow(listOf("6", "12", "24"), cellV.toString(), " V") { cellV = it.toInt() }
+                              Spacer(Modifier.height(8.dp))
+                              FieldHeader("Voltage of each battery")
+                              ChipRow(listOf("6", "12", "24", "48"), cellV.toString(), { "$it V" }) {
+                                  cellV = it.toInt()
+                              }
 
-                          Spacer(Modifier.height(8.dp))
-                          FieldHeader("Number of batteries", if (count == 1) "1 unit" else "$count units")
-                          Stepper(count) { count = it }
+                              Spacer(Modifier.height(8.dp))
+                              FieldHeader("Number of batteries", if (count == 1) "1 unit" else "$count units")
+                              Stepper(count) { count = it }
 
-                          Spacer(Modifier.height(8.dp))
-                          FieldHeader("Wiring")
-                          ChipRow(
-                              listOf("Series", "Parallel"),
-                              if (series) "Series" else "Parallel",
-                              ""
-                          ) { series = (it == "Series") }
-                          Text(
-                              if (series) {
-                                  "Series adds voltage: $count × $cellV V = ${cellV * count} V system"
-                              } else {
-                                  "Parallel adds capacity: system stays $cellV V, capacity × $count"
-                              },
-                              color = TextDim,
-                              fontSize = 12.sp
-                          )
+                              Spacer(Modifier.height(8.dp))
+                              FieldHeader(
+                                  "Inverter / system voltage",
+                                  invV?.let { num(it) + " V" }
+                              )
+                              ChipRow(listOf("12", "24", "48", "Custom"), invChoice, {
+                                  if (it == "Custom") "Custom" else "$it V"
+                              }) { invChoice = it }
+                              AnimatedVisibility(
+                                  visible = custom,
+                                  enter = expandVertically() + fadeIn(),
+                                  exit = shrinkVertically() + fadeOut()
+                              ) {
+                                  Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                      NumberField(invCustom, "V", invError != null) { invCustom = it }
+                                      Text(
+                                          invError ?: "✓ Valid — a multiple of 12 V",
+                                          color = if (invError != null) Red else Green,
+                                          fontSize = 12.sp
+                                      )
+                                  }
+                              }
+
+                              Spacer(Modifier.height(8.dp))
+                              FieldHeader("Wiring")
+                              ChipRow(
+                                  Wiring.values().map { it.label },
+                                  wiring.label,
+                                  { it }
+                              ) { picked ->
+                                  wiringName = Wiring.values().first { it.label == picked }.name
+                              }
+                              Text(
+                                  when (wiring) {
+                                      Wiring.AUTO -> "Auto picks the right mix of series and parallel for your inverter voltage."
+                                      Wiring.SERIES -> "Series: all batteries in one chain. Voltage adds up."
+                                      Wiring.PARALLEL -> "Parallel: all batteries side by side. Capacity (Ah) adds up."
+                                  },
+                                  color = TextDim,
+                                  fontSize = 12.sp
+                              )
+
+                              AnimatedVisibility(
+                                  visible = lay != null && layOk,
+                                  enter = expandVertically() + fadeIn(),
+                                  exit = shrinkVertically() + fadeOut()
+                              ) {
+                                  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                      Spacer(Modifier.height(4.dp))
+                                      WiringDiagram(lay?.s ?: 1, lay?.p ?: 1)
+                                      Text(
+                                          "${lay?.s ?: 1} in series × ${lay?.p ?: 1} in parallel = " +
+                                              "${num(systemV ?: 0.0)} V system",
+                                          color = TextMain,
+                                          fontSize = 13.sp,
+                                          fontWeight = FontWeight.Medium,
+                                          textAlign = TextAlign.Center,
+                                          modifier = Modifier.fillMaxWidth()
+                                      )
+                                  }
+                              }
+
+                              AnimatedVisibility(
+                                  visible = voltMatch != null,
+                                  enter = expandVertically() + fadeIn(),
+                                  exit = shrinkVertically() + fadeOut()
+                              ) {
+                                  val ok = voltMatch == true
+                                  Text(
+                                      if (ok) {
+                                          "✓ System voltage matches your ${num(invV ?: 0.0)} V inverter"
+                                      } else {
+                                          "⚠ This wiring gives ${num(systemV ?: 0.0)} V but your inverter is " +
+                                              "${num(invV ?: 0.0)} V. Switch wiring to Auto to match."
+                                      },
+                                      color = if (ok) Green else Amber,
+                                      fontSize = 12.sp,
+                                      fontWeight = FontWeight.Medium
+                                  )
+                              }
+
+                              AnimatedVisibility(
+                                  visible = count == 1,
+                                  enter = expandVertically() + fadeIn(),
+                                  exit = shrinkVertically() + fadeOut()
+                              ) {
+                                  Text(
+                                      "With 1 battery every wiring looks the same. Add more batteries to see the difference.",
+                                      color = TextDim,
+                                      fontSize = 12.sp
+                                  )
+                              }
+                              Text(
+                                  "Tip: backup time is the same for any wiring (same total energy). Wiring only changes system voltage and current.",
+                                  color = TextDim,
+                                  fontSize = 12.sp
+                              )
+                          }
                       }
 
                       // ---------- Notes ----------
-                      Column(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .clip(cardShape)
-                              .background(Accent.copy(alpha = 0.07f))
-                              .border(1.dp, Accent.copy(alpha = 0.25f), cardShape)
-                              .padding(18.dp),
-                          verticalArrangement = Arrangement.spacedBy(6.dp)
-                      ) {
-                          Text("• Fixed at 80% efficiency for lead-acid batteries.", color = TextDim, fontSize = 13.sp)
-                          Text("• Real backup varies with battery age, temperature and inverter losses.", color = TextDim, fontSize = 13.sp)
+                      Reveal(shown, 3) {
+                          Column(
+                              modifier = Modifier
+                                  .fillMaxWidth()
+                                  .clip(cardShape)
+                                  .background(Accent.copy(alpha = 0.07f))
+                                  .border(1.dp, Accent.copy(alpha = 0.25f), cardShape)
+                                  .padding(18.dp),
+                              verticalArrangement = Arrangement.spacedBy(6.dp)
+                          ) {
+                              Text("• Fixed at 80% efficiency for lead-acid batteries.", color = TextDim, fontSize = 13.sp)
+                              Text("• Real backup varies with battery age, temperature and inverter losses.", color = TextDim, fontSize = 13.sp)
+                          }
                       }
                       Spacer(Modifier.height(8.dp))
                   }
@@ -355,14 +527,68 @@ jobs:
           }
 
           @Composable
-          private fun ResultCard(r: BackupResult?) {
+          private fun Reveal(shown: Boolean, index: Int, content: @Composable () -> Unit) {
+              AnimatedVisibility(
+                  visible = shown,
+                  enter = fadeIn(tween(550, delayMillis = index * 110)) +
+                      slideInVertically(tween(550, delayMillis = index * 110)) { it / 6 }
+              ) {
+                  content()
+              }
+          }
+
+          @Composable
+          private fun Header() {
+              val inf = rememberInfiniteTransition(label = "bolt")
+              val pulse by inf.animateFloat(
+                  initialValue = 0.9f,
+                  targetValue = 1.12f,
+                  animationSpec = infiniteRepeatable(
+                      animation = tween(1100, easing = FastOutSlowInEasing),
+                      repeatMode = RepeatMode.Reverse
+                  ),
+                  label = "boltPulse"
+              )
+              Column(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalAlignment = Alignment.CenterHorizontally
+              ) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                      Text(
+                          "⚡",
+                          fontSize = 32.sp,
+                          modifier = Modifier.graphicsLayer {
+                              scaleX = pulse
+                              scaleY = pulse
+                          }
+                      )
+                      Spacer(Modifier.size(8.dp))
+                      Text("VoltVault", color = Accent, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                  }
+                  Spacer(Modifier.height(4.dp))
+                  Text("Lead-acid inverter backup calculator", color = TextDim, fontSize = 14.sp)
+              }
+          }
+
+          @Composable
+          private fun ResultCard(r: BackupResult?, message: String, isError: Boolean) {
               val shape = RoundedCornerShape(24.dp)
+              val inf = rememberInfiniteTransition(label = "glow")
+              val glow by inf.animateFloat(
+                  initialValue = 0.3f,
+                  targetValue = 0.85f,
+                  animationSpec = infiniteRepeatable(
+                      animation = tween(1800, easing = FastOutSlowInEasing),
+                      repeatMode = RepeatMode.Reverse
+                  ),
+                  label = "glowAlpha"
+              )
               Column(
                   modifier = Modifier
                       .fillMaxWidth()
                       .clip(shape)
                       .background(Brush.verticalGradient(listOf(Color(0xFF17375F), Color(0xFF0F2038))))
-                      .border(1.dp, Accent.copy(alpha = 0.6f), shape)
+                      .border(1.dp, Accent.copy(alpha = glow), shape)
                       .padding(20.dp),
                   horizontalAlignment = Alignment.CenterHorizontally
               ) {
@@ -377,11 +603,16 @@ jobs:
 
                   if (r == null) {
                       Text("--", color = TextMain, fontSize = 52.sp, fontWeight = FontWeight.Bold)
-                      Text("Enter your load and battery capacity", color = TextDim, fontSize = 13.sp)
+                      Text(
+                          message,
+                          color = if (isError) Amber else TextDim,
+                          fontSize = 13.sp,
+                          textAlign = TextAlign.Center
+                      )
                       return@Column
                   }
 
-                  val m = r.totalMinutes
+                  val m by animateIntAsState(r.totalMinutes, tween(700), label = "mins")
                   val parts = if (m >= 1440) {
                       listOf((m / 1440) to "d", ((m % 1440) / 60) to "hrs", (m % 60) to "min")
                   } else {
@@ -399,12 +630,40 @@ jobs:
                       }
                   }
 
-                  val (label, tint) = when {
-                      m < 60 -> "Short backup" to Color(0xFFF87171)
-                      m < 240 -> "Moderate backup" to Color(0xFFFBBF24)
-                      else -> "Good backup" to Color(0xFF4ADE80)
+                  val total = r.totalMinutes
+                  val label: String
+                  val target: Color
+                  if (total < 60) {
+                      label = "Short backup"; target = Red
+                  } else if (total < 240) {
+                      label = "Moderate backup"; target = Amber
+                  } else {
+                      label = "Good backup"; target = Green
                   }
-                  Spacer(Modifier.height(4.dp))
+                  val tint by animateColorAsState(target, tween(500), label = "tint")
+
+                  Spacer(Modifier.height(6.dp))
+                  val frac by animateFloatAsState(
+                      (total / 720f).coerceIn(0.03f, 1f),
+                      tween(800, easing = FastOutSlowInEasing),
+                      label = "gauge"
+                  )
+                  Box(
+                      Modifier
+                          .fillMaxWidth()
+                          .height(8.dp)
+                          .clip(RoundedCornerShape(50))
+                          .background(Color.White.copy(alpha = 0.08f))
+                  ) {
+                      Box(
+                          Modifier
+                              .fillMaxWidth(frac)
+                              .height(8.dp)
+                              .clip(RoundedCornerShape(50))
+                              .background(Brush.horizontalGradient(listOf(tint, Accent)))
+                      )
+                  }
+                  Spacer(Modifier.height(10.dp))
                   Box(
                       modifier = Modifier
                           .clip(RoundedCornerShape(50))
@@ -414,22 +673,42 @@ jobs:
                       Text(label, color = tint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                   }
                   Spacer(Modifier.height(8.dp))
-                  Text("Lasts until about ${runsUntil(m)} if started now", color = TextDim, fontSize = 12.sp)
+                  Text(
+                      "Lasts until about ${runsUntil(total)} if started now",
+                      color = TextDim,
+                      fontSize = 12.sp
+                  )
 
                   Spacer(Modifier.height(16.dp))
                   Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.1f)))
                   Spacer(Modifier.height(16.dp))
 
                   Row(Modifier.fillMaxWidth()) {
-                      Stat("Stored energy", wh(r.storedWh) + " Wh", Modifier.weight(1f))
-                      Stat("Usable (80%)", wh(r.usableWh) + " Wh", Modifier.weight(1f))
+                      AnimatedStat("Stored energy", r.storedWh, { wh(it) + " Wh" }, Modifier.weight(1f))
+                      AnimatedStat("Usable (80%)", r.usableWh, { wh(it) + " Wh" }, Modifier.weight(1f))
                   }
                   Spacer(Modifier.height(14.dp))
                   Row(Modifier.fillMaxWidth()) {
                       Stat("System", num(r.systemV) + " V · " + num(r.systemAh) + " Ah", Modifier.weight(1f))
-                      Stat("Discharge current", String.format(Locale.US, "%.1f A", r.currentA), Modifier.weight(1f))
+                      AnimatedStat(
+                          "Discharge current",
+                          r.currentA,
+                          { String.format(Locale.US, "%.1f A", it) },
+                          Modifier.weight(1f)
+                      )
                   }
               }
+          }
+
+          @Composable
+          private fun AnimatedStat(
+              label: String,
+              target: Double,
+              format: (Double) -> String,
+              modifier: Modifier = Modifier
+          ) {
+              val v by animateFloatAsState(target.toFloat(), tween(700), label = "stat")
+              Stat(label, format(v.toDouble()), modifier)
           }
 
           @Composable
@@ -445,6 +724,113 @@ jobs:
                       textAlign = TextAlign.Center
                   )
               }
+          }
+
+          // ------------------------------------------------------------------
+          // Wiring diagram (animated current flow)
+          // ------------------------------------------------------------------
+
+          @Composable
+          private fun WiringDiagram(s: Int, p: Int) {
+              val inf = rememberInfiniteTransition(label = "flow")
+              val t by inf.animateFloat(
+                  initialValue = 0f,
+                  targetValue = 1f,
+                  animationSpec = infiniteRepeatable(
+                      animation = tween(2400, easing = LinearEasing),
+                      repeatMode = RepeatMode.Restart
+                  ),
+                  label = "flowT"
+              )
+              val cols = minOf(s, 6)
+              val rows = minOf(p, 4)
+              val rowH = 40.dp
+
+              Canvas(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .height(rowH * rows)
+              ) {
+                  val rh = rowH.toPx()
+                  val pad = 16.dp.toPx()
+                  val slot = (size.width - 2 * pad) / cols
+                  val bw = minOf(slot * 0.62f, 60.dp.toPx())
+                  val bh = 24.dp.toPx()
+                  val stroke = 2.dp.toPx()
+                  val wire = Accent.copy(alpha = 0.55f)
+                  val leftX = pad / 2
+                  val rightX = size.width - pad / 2
+
+                  if (rows > 1) {
+                      drawLine(wire, Offset(leftX, rh * 0.5f), Offset(leftX, rh * (rows - 0.5f)), stroke)
+                      drawLine(wire, Offset(rightX, rh * 0.5f), Offset(rightX, rh * (rows - 0.5f)), stroke)
+                  }
+
+                  for (r in 0 until rows) {
+                      val cy = rh * (r + 0.5f)
+                      drawLine(wire, Offset(leftX, cy), Offset(rightX, cy), stroke)
+                      for (c in 0 until cols) {
+                          val cx = pad + slot * (c + 0.5f)
+                          val left = cx - bw / 2
+                          drawRoundRect(
+                              color = ChipBg,
+                              topLeft = Offset(left, cy - bh / 2),
+                              size = Size(bw, bh),
+                              cornerRadius = CornerRadius(6.dp.toPx())
+                          )
+                          drawRoundRect(
+                              color = Accent,
+                              topLeft = Offset(left, cy - bh / 2),
+                              size = Size(bw, bh),
+                              cornerRadius = CornerRadius(6.dp.toPx()),
+                              style = Stroke(width = stroke)
+                          )
+                          drawRoundRect(
+                              color = Accent,
+                              topLeft = Offset(left + bw, cy - 5.dp.toPx()),
+                              size = Size(3.dp.toPx(), 10.dp.toPx()),
+                              cornerRadius = CornerRadius(1.dp.toPx())
+                          )
+                      }
+                      val phase = (t + r * 0.25f) % 1f
+                      val x = leftX + (rightX - leftX) * phase
+                      drawCircle(Accent.copy(alpha = 0.3f), 9.dp.toPx(), Offset(x, cy))
+                      drawCircle(Color.White, 3.5.dp.toPx(), Offset(x, cy))
+                  }
+              }
+              if (s > 6 || p > 4) {
+                  Text(
+                      "Diagram shows ${cols} × ${rows} of ${s} × ${p}",
+                      color = TextDim,
+                      fontSize = 11.sp,
+                      modifier = Modifier.fillMaxWidth(),
+                      textAlign = TextAlign.Center
+                  )
+              }
+          }
+
+          // ------------------------------------------------------------------
+          // Small UI pieces
+          // ------------------------------------------------------------------
+
+          @Composable
+          private fun Modifier.bouncyClick(onClick: () -> Unit): Modifier {
+              val source = remember { MutableInteractionSource() }
+              val pressed by source.collectIsPressedAsState()
+              val scale by animateFloatAsState(
+                  targetValue = if (pressed) 0.93f else 1f,
+                  animationSpec = spring(
+                      dampingRatio = Spring.DampingRatioMediumBouncy,
+                      stiffness = Spring.StiffnessMedium
+                  ),
+                  label = "press"
+              )
+              return this
+                  .graphicsLayer {
+                      scaleX = scale
+                      scaleY = scale
+                  }
+                  .clickable(interactionSource = source, indication = null, onClick = onClick)
           }
 
           @Composable
@@ -469,7 +855,12 @@ jobs:
           }
 
           @Composable
-          private fun NumberField(value: String, suffix: String, onChange: (String) -> Unit) {
+          private fun NumberField(
+              value: String,
+              suffix: String,
+              isError: Boolean,
+              onChange: (String) -> Unit
+          ) {
               OutlinedTextField(
                   value = value,
                   onValueChange = { s ->
@@ -477,6 +868,7 @@ jobs:
                       if (ok) onChange(s)
                   },
                   singleLine = true,
+                  isError = isError,
                   keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                   suffix = { Text(suffix, color = TextDim) },
                   textStyle = TextStyle(color = TextMain, fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
@@ -484,8 +876,10 @@ jobs:
                   colors = OutlinedTextFieldDefaults.colors(
                       focusedBorderColor = Accent,
                       unfocusedBorderColor = Line,
+                      errorBorderColor = Red,
                       focusedContainerColor = Bg,
                       unfocusedContainerColor = Bg,
+                      errorContainerColor = Bg,
                       cursorColor = Accent
                   ),
                   modifier = Modifier.fillMaxWidth()
@@ -496,7 +890,7 @@ jobs:
           private fun ChipRow(
               options: List<String>,
               selected: String,
-              suffix: String,
+              label: (String) -> String,
               onPick: (String) -> Unit
           ) {
               Row(
@@ -506,19 +900,34 @@ jobs:
                   options.forEach { opt ->
                       val isSel = opt == selected
                       val shape = RoundedCornerShape(12.dp)
+                      val bg by animateColorAsState(
+                          if (isSel) Accent.copy(alpha = 0.18f) else ChipBg,
+                          tween(250),
+                          label = "chipBg"
+                      )
+                      val border by animateColorAsState(
+                          if (isSel) Accent else Line,
+                          tween(250),
+                          label = "chipBorder"
+                      )
+                      val txt by animateColorAsState(
+                          if (isSel) Accent else TextDim,
+                          tween(250),
+                          label = "chipText"
+                      )
                       Box(
                           modifier = Modifier
                               .weight(1f)
+                              .bouncyClick { onPick(opt) }
                               .clip(shape)
-                              .background(if (isSel) Accent.copy(alpha = 0.18f) else ChipBg)
-                              .border(1.dp, if (isSel) Accent else Line, shape)
-                              .clickable { onPick(opt) }
+                              .background(bg)
+                              .border(1.dp, border, shape)
                               .padding(vertical = 11.dp),
                           contentAlignment = Alignment.Center
                       ) {
                           Text(
-                              opt + suffix,
-                              color = if (isSel) Accent else TextDim,
+                              label(opt),
+                              color = txt,
                               fontSize = 13.sp,
                               fontWeight = FontWeight.Medium
                           )
@@ -547,7 +956,7 @@ jobs:
                   ) {
                       Text("$value", color = TextMain, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                   }
-                  StepButton("+") { if (value < 24) onChange(value + 1) }
+                  StepButton("+") { if (value < 48) onChange(value + 1) }
               }
           }
 
@@ -557,10 +966,10 @@ jobs:
               Box(
                   modifier = Modifier
                       .size(52.dp)
+                      .bouncyClick(onClick)
                       .clip(shape)
                       .background(ChipBg)
-                      .border(1.dp, Line, shape)
-                      .clickable { onClick() },
+                      .border(1.dp, Line, shape),
                   contentAlignment = Alignment.Center
               ) {
                   Text(symbol, color = Accent, fontSize = 26.sp, fontWeight = FontWeight.Medium)
