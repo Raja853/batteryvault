@@ -1,0 +1,578 @@
+name: Build VoltVault APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Create the Android project
+        run: |
+          mkdir -p app app/src/main app/src/main/java/com/example/batterybackup app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26 app/src/main/res/values
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "VoltVault"
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2g
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.example.batterybackup'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.example.batterybackup"
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 2
+                  versionName "2.0"
+              }
+
+              buildFeatures {
+                  compose true
+              }
+              composeOptions {
+                  kotlinCompilerExtensionVersion '1.5.14'
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          }
+
+          dependencies {
+              implementation platform('androidx.compose:compose-bom:2024.06.00')
+              implementation 'androidx.activity:activity-compose:1.9.0'
+              implementation 'androidx.compose.ui:ui'
+              implementation 'androidx.compose.foundation:foundation'
+              implementation 'androidx.compose.material3:material3'
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:label="VoltVault"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/colors.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#0B1220</color>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#38BDF8"
+                  android:pathData="M60,24 L38,58 L52,58 L46,86 L72,48 L57,48 Z" />
+          </vector>
+          EOF
+
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background" />
+              <foreground android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
+          EOF
+
+          cat > app/src/main/java/com/example/batterybackup/MainActivity.kt <<'EOF'
+          package com.example.batterybackup
+
+          import android.graphics.Color as AColor
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.border
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.text.KeyboardOptions
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.OutlinedTextField
+          import androidx.compose.material3.OutlinedTextFieldDefaults
+          import androidx.compose.material3.Surface
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.saveable.rememberSaveable
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.graphics.Brush
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.text.TextStyle
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.input.KeyboardType
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import java.text.SimpleDateFormat
+          import java.util.Calendar
+          import java.util.Locale
+
+          private val Bg = Color(0xFF0B1220)
+          private val CardBg = Color(0xFF131C2E)
+          private val Line = Color(0xFF243049)
+          private val Accent = Color(0xFF38BDF8)
+          private val TextMain = Color(0xFFF1F5F9)
+          private val TextDim = Color(0xFF94A3B8)
+          private val ChipBg = Color(0xFF1B2740)
+
+          private const val EFFICIENCY = 0.8 // lead-acid: 80% usable
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.statusBarColor = AColor.parseColor("#0B1220")
+                  window.navigationBarColor = AColor.parseColor("#0B1220")
+                  setContent { VoltVaultApp() }
+              }
+          }
+
+          private data class BackupResult(
+              val totalMinutes: Int,
+              val storedWh: Double,
+              val usableWh: Double,
+              val systemV: Double,
+              val systemAh: Double,
+              val currentA: Double
+          )
+
+          private fun calculate(
+              load: Double?,
+              ah: Double?,
+              cellV: Double,
+              count: Int,
+              series: Boolean
+          ): BackupResult? {
+              if (load == null || ah == null || load <= 0.0 || ah <= 0.0 || count <= 0) return null
+              val systemV = if (series) cellV * count else cellV
+              val systemAh = if (series) ah else ah * count
+              val stored = systemV * systemAh
+              val usable = stored * EFFICIENCY
+              val hours = usable / load
+              val current = load / (systemV * EFFICIENCY)
+              val minutes = (hours * 60.0).coerceAtMost(6_000_000.0)
+              return BackupResult(Math.round(minutes).toInt(), stored, usable, systemV, systemAh, current)
+          }
+
+          private fun num(x: Double): String =
+              if (x % 1.0 == 0.0) x.toLong().toString() else String.format(Locale.US, "%.1f", x)
+
+          private fun wh(x: Double): String = String.format(Locale.US, "%,.0f", x)
+
+          private fun runsUntil(minutes: Int): String {
+              val now = Calendar.getInstance()
+              val end = Calendar.getInstance().apply { add(Calendar.MINUTE, minutes) }
+              val sameDay = now.get(Calendar.YEAR) == end.get(Calendar.YEAR) &&
+                  now.get(Calendar.DAY_OF_YEAR) == end.get(Calendar.DAY_OF_YEAR)
+              val pattern = if (sameDay) "h:mm a" else "EEE, h:mm a"
+              return SimpleDateFormat(pattern, Locale.getDefault()).format(end.time)
+          }
+
+          @Composable
+          fun VoltVaultApp() {
+              var load by rememberSaveable { mutableStateOf("350") }
+              var ah by rememberSaveable { mutableStateOf("150") }
+              var cellV by rememberSaveable { mutableStateOf(12) }
+              var count by rememberSaveable { mutableStateOf(1) }
+              var series by rememberSaveable { mutableStateOf(true) }
+
+              val result = calculate(load.toDoubleOrNull(), ah.toDoubleOrNull(), cellV.toDouble(), count, series)
+              val cardShape = RoundedCornerShape(24.dp)
+
+              Surface(color = Bg, modifier = Modifier.fillMaxSize()) {
+                  Column(
+                      modifier = Modifier
+                          .verticalScroll(rememberScrollState())
+                          .padding(horizontal = 16.dp, vertical = 20.dp),
+                      verticalArrangement = Arrangement.spacedBy(16.dp)
+                  ) {
+                      // ---------- Header ----------
+                      Column(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalAlignment = Alignment.CenterHorizontally
+                      ) {
+                          Text(
+                              "⚡ VoltVault",
+                              color = Accent,
+                              fontSize = 30.sp,
+                              fontWeight = FontWeight.Bold
+                          )
+                          Spacer(Modifier.height(4.dp))
+                          Text(
+                              "Lead-acid inverter backup calculator",
+                              color = TextDim,
+                              fontSize = 14.sp
+                          )
+                      }
+
+                      // ---------- Result card ----------
+                      ResultCard(result)
+
+                      // ---------- Inputs ----------
+                      Column(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .clip(cardShape)
+                              .background(CardBg)
+                              .border(1.dp, Line, cardShape)
+                              .padding(20.dp),
+                          verticalArrangement = Arrangement.spacedBy(10.dp)
+                      ) {
+                          FieldHeader("Total load", load.toDoubleOrNull()?.let { num(it) + " W" })
+                          NumberField(load, "W") { load = it }
+                          ChipRow(listOf("150", "350", "600", "1000"), load, " W") { load = it }
+
+                          Spacer(Modifier.height(8.dp))
+                          FieldHeader("Battery capacity", ah.toDoubleOrNull()?.let { num(it) + " Ah" })
+                          NumberField(ah, "Ah") { ah = it }
+                          ChipRow(listOf("100", "150", "200", "220"), ah, " Ah") { ah = it }
+
+                          Spacer(Modifier.height(8.dp))
+                          FieldHeader("Voltage of each battery")
+                          ChipRow(listOf("6", "12", "24"), cellV.toString(), " V") { cellV = it.toInt() }
+
+                          Spacer(Modifier.height(8.dp))
+                          FieldHeader("Number of batteries", if (count == 1) "1 unit" else "$count units")
+                          Stepper(count) { count = it }
+
+                          Spacer(Modifier.height(8.dp))
+                          FieldHeader("Wiring")
+                          ChipRow(
+                              listOf("Series", "Parallel"),
+                              if (series) "Series" else "Parallel",
+                              ""
+                          ) { series = (it == "Series") }
+                          Text(
+                              if (series) {
+                                  "Series adds voltage: $count × $cellV V = ${cellV * count} V system"
+                              } else {
+                                  "Parallel adds capacity: system stays $cellV V, capacity × $count"
+                              },
+                              color = TextDim,
+                              fontSize = 12.sp
+                          )
+                      }
+
+                      // ---------- Notes ----------
+                      Column(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .clip(cardShape)
+                              .background(Accent.copy(alpha = 0.07f))
+                              .border(1.dp, Accent.copy(alpha = 0.25f), cardShape)
+                              .padding(18.dp),
+                          verticalArrangement = Arrangement.spacedBy(6.dp)
+                      ) {
+                          Text("• Fixed at 80% efficiency for lead-acid batteries.", color = TextDim, fontSize = 13.sp)
+                          Text("• Real backup varies with battery age, temperature and inverter losses.", color = TextDim, fontSize = 13.sp)
+                      }
+                      Spacer(Modifier.height(8.dp))
+                  }
+              }
+          }
+
+          @Composable
+          private fun ResultCard(r: BackupResult?) {
+              val shape = RoundedCornerShape(24.dp)
+              Column(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .clip(shape)
+                      .background(Brush.verticalGradient(listOf(Color(0xFF17375F), Color(0xFF0F2038))))
+                      .border(1.dp, Accent.copy(alpha = 0.6f), shape)
+                      .padding(20.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally
+              ) {
+                  Text(
+                      "ESTIMATED BACKUP TIME",
+                      color = Accent,
+                      fontSize = 12.sp,
+                      letterSpacing = 2.sp,
+                      fontWeight = FontWeight.SemiBold
+                  )
+                  Spacer(Modifier.height(8.dp))
+
+                  if (r == null) {
+                      Text("--", color = TextMain, fontSize = 52.sp, fontWeight = FontWeight.Bold)
+                      Text("Enter your load and battery capacity", color = TextDim, fontSize = 13.sp)
+                      return@Column
+                  }
+
+                  val m = r.totalMinutes
+                  val parts = if (m >= 1440) {
+                      listOf((m / 1440) to "d", ((m % 1440) / 60) to "hrs", (m % 60) to "min")
+                  } else {
+                      listOf((m / 60) to "hrs", (m % 60) to "min")
+                  }
+                  Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.Center) {
+                      parts.forEach { (value, unit) ->
+                          Text("$value", color = TextMain, fontSize = 52.sp, fontWeight = FontWeight.Bold)
+                          Text(
+                              " $unit",
+                              color = Accent,
+                              fontSize = 18.sp,
+                              modifier = Modifier.padding(start = 2.dp, end = 10.dp, bottom = 10.dp)
+                          )
+                      }
+                  }
+
+                  val (label, tint) = when {
+                      m < 60 -> "Short backup" to Color(0xFFF87171)
+                      m < 240 -> "Moderate backup" to Color(0xFFFBBF24)
+                      else -> "Good backup" to Color(0xFF4ADE80)
+                  }
+                  Spacer(Modifier.height(4.dp))
+                  Box(
+                      modifier = Modifier
+                          .clip(RoundedCornerShape(50))
+                          .background(tint.copy(alpha = 0.15f))
+                          .padding(horizontal = 12.dp, vertical = 5.dp)
+                  ) {
+                      Text(label, color = tint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                  }
+                  Spacer(Modifier.height(8.dp))
+                  Text("Lasts until about ${runsUntil(m)} if started now", color = TextDim, fontSize = 12.sp)
+
+                  Spacer(Modifier.height(16.dp))
+                  Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.1f)))
+                  Spacer(Modifier.height(16.dp))
+
+                  Row(Modifier.fillMaxWidth()) {
+                      Stat("Stored energy", wh(r.storedWh) + " Wh", Modifier.weight(1f))
+                      Stat("Usable (80%)", wh(r.usableWh) + " Wh", Modifier.weight(1f))
+                  }
+                  Spacer(Modifier.height(14.dp))
+                  Row(Modifier.fillMaxWidth()) {
+                      Stat("System", num(r.systemV) + " V · " + num(r.systemAh) + " Ah", Modifier.weight(1f))
+                      Stat("Discharge current", String.format(Locale.US, "%.1f A", r.currentA), Modifier.weight(1f))
+                  }
+              }
+          }
+
+          @Composable
+          private fun Stat(label: String, value: String, modifier: Modifier = Modifier) {
+              Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+                  Text(label, color = TextDim, fontSize = 12.sp)
+                  Spacer(Modifier.height(2.dp))
+                  Text(
+                      value,
+                      color = TextMain,
+                      fontSize = 17.sp,
+                      fontWeight = FontWeight.SemiBold,
+                      textAlign = TextAlign.Center
+                  )
+              }
+          }
+
+          @Composable
+          private fun FieldHeader(title: String, badge: String? = null) {
+              Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  Text(title, color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                  if (badge != null) {
+                      Box(
+                          modifier = Modifier
+                              .clip(RoundedCornerShape(50))
+                              .background(Accent.copy(alpha = 0.15f))
+                              .padding(horizontal = 10.dp, vertical = 4.dp)
+                      ) {
+                          Text(badge, color = Accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun NumberField(value: String, suffix: String, onChange: (String) -> Unit) {
+              OutlinedTextField(
+                  value = value,
+                  onValueChange = { s ->
+                      val ok = s.length <= 8 && s.all { it.isDigit() || it == '.' } && s.count { it == '.' } <= 1
+                      if (ok) onChange(s)
+                  },
+                  singleLine = true,
+                  keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                  suffix = { Text(suffix, color = TextDim) },
+                  textStyle = TextStyle(color = TextMain, fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
+                  shape = RoundedCornerShape(14.dp),
+                  colors = OutlinedTextFieldDefaults.colors(
+                      focusedBorderColor = Accent,
+                      unfocusedBorderColor = Line,
+                      focusedContainerColor = Bg,
+                      unfocusedContainerColor = Bg,
+                      cursorColor = Accent
+                  ),
+                  modifier = Modifier.fillMaxWidth()
+              )
+          }
+
+          @Composable
+          private fun ChipRow(
+              options: List<String>,
+              selected: String,
+              suffix: String,
+              onPick: (String) -> Unit
+          ) {
+              Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                  options.forEach { opt ->
+                      val isSel = opt == selected
+                      val shape = RoundedCornerShape(12.dp)
+                      Box(
+                          modifier = Modifier
+                              .weight(1f)
+                              .clip(shape)
+                              .background(if (isSel) Accent.copy(alpha = 0.18f) else ChipBg)
+                              .border(1.dp, if (isSel) Accent else Line, shape)
+                              .clickable { onPick(opt) }
+                              .padding(vertical = 11.dp),
+                          contentAlignment = Alignment.Center
+                      ) {
+                          Text(
+                              opt + suffix,
+                              color = if (isSel) Accent else TextDim,
+                              fontSize = 13.sp,
+                              fontWeight = FontWeight.Medium
+                          )
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun Stepper(value: Int, onChange: (Int) -> Unit) {
+              val shape = RoundedCornerShape(14.dp)
+              Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                  StepButton("−") { if (value > 1) onChange(value - 1) }
+                  Box(
+                      modifier = Modifier
+                          .weight(1f)
+                          .height(52.dp)
+                          .clip(shape)
+                          .background(Bg)
+                          .border(1.dp, Line, shape),
+                      contentAlignment = Alignment.Center
+                  ) {
+                      Text("$value", color = TextMain, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                  }
+                  StepButton("+") { if (value < 24) onChange(value + 1) }
+              }
+          }
+
+          @Composable
+          private fun StepButton(symbol: String, onClick: () -> Unit) {
+              val shape = RoundedCornerShape(14.dp)
+              Box(
+                  modifier = Modifier
+                      .size(52.dp)
+                      .clip(shape)
+                      .background(ChipBg)
+                      .border(1.dp, Line, shape)
+                      .clickable { onClick() },
+                  contentAlignment = Alignment.Center
+              ) {
+                  Text(symbol, color = Accent, fontSize = 26.sp, fontWeight = FontWeight.Medium)
+              }
+          }
+          EOF
+
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoltVault-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
